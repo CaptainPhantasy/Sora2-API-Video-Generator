@@ -1,0 +1,42 @@
+# Environment variables
+.env
+
+# API keys and secrets
+*.key
+*.pem
+secrets.json
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# Generated videos (if storing locally)
+videos/
+output/
+downloads/
+
+# Node modules (if you add npm packages later)
+node_modules/
+package-lock.json
+yarn.lock
+
+# Python (if you add backend)
+__pycache__/
+*.py[cod]
+venv/
+env/
+
+# Backup files
+*.bak
+*.backup
+.env.local
