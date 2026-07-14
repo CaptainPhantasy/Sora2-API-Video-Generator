@@ -27,7 +27,9 @@ fi
 
 # Load environment variables
 echo -e "${BLUE}📋 Loading environment variables...${NC}"
-export $(cat .env.local | xargs)
+set -a
+source .env.local
+set +a
 
 # Check if API key is set
 if [ -z "$OPENAI_API_KEY" ]; then

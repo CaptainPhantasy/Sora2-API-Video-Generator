@@ -25,8 +25,7 @@ interface VideoJob {
 type Theme = 'warm' | 'dark'
 
 export function VideoGenerator() {
-  const [mounted, setMounted] = useState(false)
-  const [theme, setTheme] = useState<Theme>('warm')
+  const [theme, setTheme] = useState<Theme>('warm') // Default to warm to match server render
   const [prompt, setPrompt] = useState('')
   const [model, setModel] = useState('sora-2')
   const [duration, setDuration] = useState('8')
@@ -43,7 +42,6 @@ export function VideoGenerator() {
 
   // Load theme from localStorage on mount
   useEffect(() => {
-    setMounted(true)
     const savedTheme = localStorage.getItem('sora-theme') as Theme
     if (savedTheme) {
       setTheme(savedTheme)
@@ -52,10 +50,8 @@ export function VideoGenerator() {
 
   // Save theme to localStorage whenever it changes
   useEffect(() => {
-    if (mounted) {
-      localStorage.setItem('sora-theme', theme)
-    }
-  }, [theme, mounted])
+    localStorage.setItem('sora-theme', theme)
+  }, [theme])
 
   const toggleTheme = () => {
     setTheme(prev => prev === 'warm' ? 'dark' : 'warm')
@@ -232,7 +228,7 @@ export function VideoGenerator() {
             </button>
           </div>
           <p className={`${subtextClass} text-sm md:text-lg max-w-2xl mx-auto`}>
-            Create stunning AI-generated videos with OpenAI's Sora 2. Enter your prompt and customize the settings below.
+            Create stunning AI-generated videos with OpenAI&apos;s Sora 2. Enter your prompt and customize the settings below.
           </p>
         </div>
 
@@ -453,7 +449,7 @@ export function VideoGenerator() {
                 <div className="flex flex-col items-center justify-center py-12 text-center">
                   <VideoIcon className={`w-16 h-16 mb-4 ${theme === 'warm' ? 'text-gray-300' : 'text-gray-700'}`} />
                   <p className={subtextClass}>
-                    Fill in the form and click "Generate Video" to create your AI-powered video.
+                    Fill in the form and click &quot;Generate Video&quot; to create your AI-powered video.
                   </p>
                 </div>
               )}
