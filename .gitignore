@@ -25,9 +25,8 @@ videos/
 output/
 downloads/
 
-# Node modules (if you add npm packages later)
+# Node modules
 node_modules/
-package-lock.json
 yarn.lock
 
 # Python (if you add backend)
