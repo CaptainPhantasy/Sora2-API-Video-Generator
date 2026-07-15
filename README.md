@@ -7,7 +7,7 @@ Built with Next.js 15, React 19, TypeScript, Tailwind CSS, and ShadCN UI.
 ## Features
 
 - Two AI models (Sora 2 and Sora 2 Pro)
-- Customizable duration, resolution, quality, and FPS
+- API-supported duration and resolution controls
 - Real-time progress tracking
 - Dual theme support (Warm and Dark modes)
 - In-browser video preview and download
@@ -69,7 +69,7 @@ Built with Next.js 15, React 19, TypeScript, Tailwind CSS, and ShadCN UI.
 2. Open http://localhost:3001
 3. Choose a theme (sun/moon icon in header)
 4. Enter a video prompt
-5. Select model, duration, resolution, quality, and FPS
+5. Select the model, duration, and supported resolution
 6. Review the cost estimate
 7. Click "Generate Video"
 8. Wait for generation (typically 2-5 minutes)
@@ -110,11 +110,12 @@ Include:
 - Longer videos may take more time
 
 **Port conflicts**
-```bash
-lsof -ti:3000 | xargs kill -9
-lsof -ti:3001 | xargs kill -9
-./start-system.sh
-```
+
+The startup script will identify an occupied port and stop without killing unrelated processes. Stop the owning application or set `PORT` and `FRONTEND_PORT` in `.env.local`.
+
+## Verification
+
+Run `bash scripts/check.sh` to execute server tests, safe environment-loader tests, frontend lint, and the production build.
 
 ## Resources
 

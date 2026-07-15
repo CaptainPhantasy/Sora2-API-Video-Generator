@@ -1,239 +1,221 @@
 #!/usr/bin/env node
-/**
- * Sora 2 Video Generator - Backend Proxy Server
- *
- * This server acts as a proxy between the browser and OpenAI's API
- * to avoid CORS issues and keep the API key secure on the server side.
- */
 
-const http = require('http');
-const https = require('https');
-const url = require('url');
+const http = require('node:http')
 
-// Configuration
-const PORT = process.env.PORT || 3000;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
+const DEFAULT_BODY_LIMIT = 64 * 1024
+const VIDEO_ID_PATTERN = /^video_[A-Za-z0-9_-]{1,128}$/
+const ALLOWED_MODELS = new Set(['sora-2', 'sora-2-pro'])
+const ALLOWED_SECONDS = new Set(['4', '8', '12'])
+const ALLOWED_SIZES = new Set(['720x1280', '1280x720', '1024x1792', '1792x1024'])
 
-// ANSI colors for console
-const colors = {
-    reset: '\x1b[0m',
-    green: '\x1b[32m',
-    yellow: '\x1b[33m',
-    blue: '\x1b[36m',
-    red: '\x1b[31m'
-};
-
-function log(message, color = 'reset') {
-    console.log(`${colors[color]}${message}${colors.reset}`);
+function sendJson(res, statusCode, body, headers = {}) {
+  res.writeHead(statusCode, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-store',
+    'X-Content-Type-Options': 'nosniff',
+    'Referrer-Policy': 'no-referrer',
+    ...headers,
+  })
+  res.end(JSON.stringify(body))
 }
 
-// Helper function to make HTTPS requests
-function makeOpenAIRequest(path, method, data, callback) {
-    const options = {
-        hostname: 'api.openai.com',
-        port: 443,
-        path: path,
-        method: method,
-        headers: {
-            'Authorization': `Bearer ${OPENAI_API_KEY}`,
-            'Content-Type': 'application/json'
-        }
-    };
+function readJson(req, limit = DEFAULT_BODY_LIMIT) {
+  return new Promise((resolve, reject) => {
+    let body = ''
+    let size = 0
 
-    if (data && method === 'POST') {
-        const jsonData = JSON.stringify(data);
-        options.headers['Content-Length'] = Buffer.byteLength(jsonData);
-    }
-
-    const req = https.request(options, (res) => {
-        let responseData = '';
-
-        res.on('data', (chunk) => {
-            responseData += chunk;
-        });
-
-        res.on('end', () => {
-            try {
-                const parsed = JSON.parse(responseData);
-                callback(null, parsed, res.statusCode);
-            } catch (e) {
-                callback(null, responseData, res.statusCode);
-            }
-        });
-    });
-
-    req.on('error', (error) => {
-        callback(error);
-    });
-
-    if (data && method === 'POST') {
-        req.write(JSON.stringify(data));
-    }
-
-    req.end();
+    req.setEncoding('utf8')
+    req.on('data', (chunk) => {
+      size += Buffer.byteLength(chunk)
+      if (size > limit) {
+        const error = new Error('Request body is too large')
+        error.statusCode = 413
+        reject(error)
+        req.destroy()
+        return
+      }
+      body += chunk
+    })
+    req.on('end', () => {
+      try {
+        resolve(JSON.parse(body))
+      } catch {
+        const error = new Error('Invalid JSON')
+        error.statusCode = 400
+        reject(error)
+      }
+    })
+    req.on('error', reject)
+  })
 }
 
-// Create HTTP server
-const server = http.createServer((req, res) => {
-    // Enable CORS for all origins (you can restrict this in production)
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+function validateCreateRequest(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    return { error: 'Request body must be an object' }
+  }
 
-    // Handle preflight requests
+  const prompt = typeof input.prompt === 'string' ? input.prompt.trim() : ''
+  const model = input.model || 'sora-2'
+  const seconds = String(input.seconds || '4')
+  const size = input.size || '720x1280'
+
+  if (!prompt || prompt.length > 32000) return { error: 'Prompt must contain 1 to 32000 characters' }
+  if (!ALLOWED_MODELS.has(model)) return { error: 'Unsupported video model' }
+  if (!ALLOWED_SECONDS.has(seconds)) return { error: 'Unsupported video duration' }
+  if (!ALLOWED_SIZES.has(size)) return { error: 'Unsupported video size' }
+
+  return { value: { prompt, model, seconds, size } }
+}
+
+function createRateLimiter({ limit = 30, windowMs = 60_000 } = {}) {
+  const buckets = new Map()
+
+  return (key) => {
+    const now = Date.now()
+    const bucket = buckets.get(key)
+    if (!bucket || now - bucket.startedAt >= windowMs) {
+      buckets.set(key, { count: 1, startedAt: now })
+      return false
+    }
+    bucket.count += 1
+    return bucket.count > limit
+  }
+}
+
+function createAppServer(options = {}) {
+  const apiKey = options.apiKey ?? process.env.OPENAI_API_KEY ?? ''
+  const fetchImpl = options.fetchImpl ?? globalThis.fetch
+  const allowedOrigins = new Set(
+    options.allowedOrigins ??
+      (process.env.ALLOWED_ORIGINS || 'http://localhost:3001,http://127.0.0.1:3001')
+        .split(',')
+        .map((origin) => origin.trim())
+        .filter(Boolean),
+  )
+  const isRateLimited = createRateLimiter(options.rateLimit)
+
+  return http.createServer(async (req, res) => {
+    const origin = req.headers.origin
+    if (origin && !allowedOrigins.has(origin)) {
+      sendJson(res, 403, { error: 'Origin is not allowed' })
+      return
+    }
+
+    const corsHeaders = origin ? { 'Access-Control-Allow-Origin': origin, Vary: 'Origin' } : {}
     if (req.method === 'OPTIONS') {
-        res.writeHead(200);
-        res.end();
-        return;
+      res.writeHead(204, {
+        ...corsHeaders,
+        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type',
+        'Access-Control-Max-Age': '600',
+      })
+      res.end()
+      return
     }
 
-    const parsedUrl = url.parse(req.url, true);
-    const pathname = parsedUrl.pathname;
+    const requestUrl = new URL(req.url, 'http://localhost')
+    const pathname = requestUrl.pathname
+    const clientKey = req.socket.remoteAddress || 'unknown'
 
-    log(`${req.method} ${pathname}`, 'blue');
-
-    // Health check endpoint
     if (pathname === '/health' && req.method === 'GET') {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({
-            status: 'ok',
-            apiKeyConfigured: !!OPENAI_API_KEY,
-            server: 'Sora 2 Proxy'
-        }));
-        return;
+      sendJson(res, 200, { status: 'ok', apiConfigured: Boolean(apiKey) }, corsHeaders)
+      return
     }
 
-    // Create video generation job
-    if (pathname === '/api/video/generate' && req.method === 'POST') {
-        let body = '';
-
-        req.on('data', chunk => {
-            body += chunk.toString();
-        });
-
-        req.on('end', () => {
-            try {
-                const requestData = JSON.parse(body);
-
-                log(`Creating video: ${requestData.prompt?.substring(0, 50)}...`, 'yellow');
-
-                makeOpenAIRequest('/v1/videos', 'POST', requestData, (error, data, statusCode) => {
-                    if (error) {
-                        log(`Error: ${error.message}`, 'red');
-                        res.writeHead(500, { 'Content-Type': 'application/json' });
-                        res.end(JSON.stringify({ error: error.message }));
-                        return;
-                    }
-
-                    log(`Response: ${statusCode}`, statusCode === 200 ? 'green' : 'red');
-                    res.writeHead(statusCode, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify(data));
-                });
-            } catch (e) {
-                log(`Parse error: ${e.message}`, 'red');
-                res.writeHead(400, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ error: 'Invalid JSON' }));
-            }
-        });
-        return;
+    if (!pathname.startsWith('/api/video/')) {
+      sendJson(res, 404, { error: 'Not found' }, corsHeaders)
+      return
+    }
+    if (!apiKey) {
+      sendJson(res, 503, { error: 'Video API is not configured' }, corsHeaders)
+      return
+    }
+    if (isRateLimited(clientKey)) {
+      sendJson(res, 429, { error: 'Too many requests' }, { ...corsHeaders, 'Retry-After': '60' })
+      return
     }
 
-    // Check video generation status
-    if (pathname.startsWith('/api/video/status/') && req.method === 'GET') {
-        const jobId = pathname.replace('/api/video/status/', '');
+    try {
+      if (pathname === '/api/video/generate' && req.method === 'POST') {
+        const parsed = validateCreateRequest(await readJson(req))
+        if (parsed.error) {
+          sendJson(res, 400, { error: parsed.error }, corsHeaders)
+          return
+        }
 
-        log(`Checking status: ${jobId}`, 'yellow');
+        const form = new FormData()
+        for (const [key, value] of Object.entries(parsed.value)) form.set(key, value)
+        const upstream = await fetchImpl('https://api.openai.com/v1/videos', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${apiKey}` },
+          body: form,
+        })
+        const payload = await upstream.json().catch(() => ({ error: { message: 'Invalid upstream response' } }))
+        sendJson(res, upstream.status, payload, corsHeaders)
+        return
+      }
 
-        makeOpenAIRequest(`/v1/videos/${jobId}`, 'GET', null, (error, data, statusCode) => {
-            if (error) {
-                log(`Error: ${error.message}`, 'red');
-                res.writeHead(500, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ error: error.message }));
-                return;
-            }
+      const statusMatch = pathname.match(/^\/api\/video\/status\/(.+)$/)
+      if (statusMatch && req.method === 'GET') {
+        const jobId = decodeURIComponent(statusMatch[1])
+        if (!VIDEO_ID_PATTERN.test(jobId)) {
+          sendJson(res, 400, { error: 'Invalid video ID' }, corsHeaders)
+          return
+        }
+        const upstream = await fetchImpl(`https://api.openai.com/v1/videos/${jobId}`, {
+          headers: { Authorization: `Bearer ${apiKey}` },
+        })
+        const payload = await upstream.json().catch(() => ({ error: { message: 'Invalid upstream response' } }))
+        sendJson(res, upstream.status, payload, corsHeaders)
+        return
+      }
 
-            log(`Status: ${data.status || 'unknown'}`, 'green');
-            res.writeHead(statusCode, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify(data));
-        });
-        return;
+      const downloadMatch = pathname.match(/^\/api\/video\/download\/(.+)$/)
+      if (downloadMatch && req.method === 'GET') {
+        const jobId = decodeURIComponent(downloadMatch[1])
+        if (!VIDEO_ID_PATTERN.test(jobId)) {
+          sendJson(res, 400, { error: 'Invalid video ID' }, corsHeaders)
+          return
+        }
+        const upstream = await fetchImpl(`https://api.openai.com/v1/videos/${jobId}/content`, {
+          headers: { Authorization: `Bearer ${apiKey}` },
+        })
+        if (!upstream.ok || !upstream.body) {
+          const payload = await upstream.json().catch(() => ({ error: { message: 'Download failed' } }))
+          sendJson(res, upstream.status, payload, corsHeaders)
+          return
+        }
+        res.writeHead(upstream.status, {
+          ...corsHeaders,
+          'Content-Type': upstream.headers.get('content-type') || 'video/mp4',
+          'Content-Disposition': `attachment; filename="sora-${jobId}.mp4"`,
+          'Cache-Control': 'private, no-store',
+          'X-Content-Type-Options': 'nosniff',
+        })
+        for await (const chunk of upstream.body) res.write(chunk)
+        res.end()
+        return
+      }
+
+      sendJson(res, 404, { error: 'Not found' }, corsHeaders)
+    } catch (error) {
+      const statusCode = Number.isInteger(error.statusCode) ? error.statusCode : 502
+      sendJson(res, statusCode, { error: statusCode < 500 ? error.message : 'Upstream video request failed' }, corsHeaders)
     }
+  })
+}
 
-    // Download video content
-    if (pathname.startsWith('/api/video/download/') && req.method === 'GET') {
-        const jobId = pathname.replace('/api/video/download/', '');
+if (require.main === module) {
+  const port = Number(process.env.PORT || 3000)
+  const host = process.env.HOST || '127.0.0.1'
+  const server = createAppServer()
+  server.listen(port, host, () => {
+    console.log(`Sora video proxy listening at http://${host}:${port}`)
+  })
 
-        log(`Downloading video: ${jobId}`, 'yellow');
+  const shutdown = () => server.close(() => process.exit(0))
+  process.on('SIGTERM', shutdown)
+  process.on('SIGINT', shutdown)
+}
 
-        const options = {
-            hostname: 'api.openai.com',
-            port: 443,
-            path: `/v1/videos/${jobId}/content`,
-            method: 'GET',
-            headers: {
-                'Authorization': `Bearer ${OPENAI_API_KEY}`
-            }
-        };
-
-        const proxyReq = https.request(options, (proxyRes) => {
-            log(`Download response: ${proxyRes.statusCode}`, proxyRes.statusCode === 200 ? 'green' : 'red');
-
-            // Set headers for download
-            res.writeHead(proxyRes.statusCode, {
-                'Content-Type': proxyRes.headers['content-type'] || 'video/mp4',
-                'Content-Disposition': `attachment; filename="sora-video-${jobId.substring(6, 16)}.mp4"`,
-                'Content-Length': proxyRes.headers['content-length'],
-                'Access-Control-Allow-Origin': '*'
-            });
-
-            // Pipe the video content directly to the response
-            proxyRes.pipe(res);
-        });
-
-        proxyReq.on('error', (error) => {
-            log(`Download error: ${error.message}`, 'red');
-            res.writeHead(500, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: error.message }));
-        });
-
-        proxyReq.end();
-        return;
-    }
-
-    // 404 for unknown endpoints
-    res.writeHead(404, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Not found' }));
-});
-
-// Start server
-server.listen(PORT, () => {
-    log('\n' + '='.repeat(60), 'green');
-    log('🚀 Sora 2 Video Generator - Proxy Server Started', 'green');
-    log('='.repeat(60), 'green');
-    log(`\n📡 Server running at: http://localhost:${PORT}`, 'blue');
-    log(`🔑 API Key configured: ${OPENAI_API_KEY ? '✅ Yes' : '❌ No'}`, OPENAI_API_KEY ? 'green' : 'red');
-    log(`\n📋 Available endpoints:`, 'yellow');
-    log(`   GET  /health - Health check`, 'reset');
-    log(`   POST /api/video/generate - Create video`, 'reset');
-    log(`   GET  /api/video/status/:id - Check status`, 'reset');
-    log(`\n💡 Open index.html in your browser to use the GUI`, 'blue');
-    log(`\n⚠️  Make sure to set OPENAI_API_KEY environment variable!`, OPENAI_API_KEY ? 'reset' : 'yellow');
-    log('='.repeat(60) + '\n', 'green');
-});
-
-// Handle graceful shutdown
-process.on('SIGTERM', () => {
-    log('\n🛑 Shutting down server...', 'yellow');
-    server.close(() => {
-        log('✅ Server closed', 'green');
-        process.exit(0);
-    });
-});
-
-process.on('SIGINT', () => {
-    log('\n🛑 Shutting down server...', 'yellow');
-    server.close(() => {
-        log('✅ Server closed', 'green');
-        process.exit(0);
-    });
-});
+module.exports = { createAppServer, validateCreateRequest }

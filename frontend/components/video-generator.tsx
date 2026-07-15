@@ -3,7 +3,6 @@
 import { useState, useEffect } from 'react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
@@ -26,13 +25,11 @@ type Theme = 'warm' | 'dark'
 
 export function VideoGenerator() {
   const [theme, setTheme] = useState<Theme>('warm') // Default to warm to match server render
+  const [isThemeHydrated, setIsThemeHydrated] = useState(false)
   const [prompt, setPrompt] = useState('')
   const [model, setModel] = useState('sora-2')
   const [duration, setDuration] = useState('8')
   const [resolution, setResolution] = useState('1280x720')
-  const [quality, setQuality] = useState('standard')
-  const [style, setStyle] = useState('auto')
-  const [fps, setFps] = useState('24')
 
   const [loading, setLoading] = useState(false)
   const [progress, setProgress] = useState(0)
@@ -42,16 +39,18 @@ export function VideoGenerator() {
 
   // Load theme from localStorage on mount
   useEffect(() => {
-    const savedTheme = localStorage.getItem('sora-theme') as Theme
-    if (savedTheme) {
+    const savedTheme = localStorage.getItem('sora-theme')
+    if (savedTheme === 'warm' || savedTheme === 'dark') {
       setTheme(savedTheme)
     }
+    setIsThemeHydrated(true)
   }, [])
 
   // Save theme to localStorage whenever it changes
   useEffect(() => {
+    if (!isThemeHydrated) return
     localStorage.setItem('sora-theme', theme)
-  }, [theme])
+  }, [isThemeHydrated, theme])
 
   const toggleTheme = () => {
     setTheme(prev => prev === 'warm' ? 'dark' : 'warm')
@@ -104,7 +103,7 @@ export function VideoGenerator() {
             setLoading(false)
           }
         }
-      } catch (error) {
+      } catch {
         setStatus({ type: 'error', message: 'Failed to check video status' })
         setLoading(false)
       }
@@ -135,10 +134,7 @@ export function VideoGenerator() {
           model,
           prompt: prompt.trim(),
           seconds: duration,
-          size: resolution,
-          quality,
-          style,
-          fps: parseInt(fps)
+          size: resolution
         })
       })
 
@@ -181,7 +177,7 @@ export function VideoGenerator() {
       document.body.removeChild(a)
 
       setStatus({ type: 'success', message: 'Video downloaded successfully!' })
-    } catch (error) {
+    } catch {
       setStatus({ type: 'error', message: 'Download failed. Please try again.' })
     }
   }
@@ -312,39 +308,11 @@ export function VideoGenerator() {
                     </SelectTrigger>
                     <SelectContent className={theme === 'dark' ? 'bg-slate-800 border-slate-600 text-white' : ''}>
                       <SelectItem value="1280x720">1280x720 (HD)</SelectItem>
-                      <SelectItem value="1920x1080">1920x1080 (Full HD)</SelectItem>
-                      <SelectItem value="3840x2160">3840x2160 (4K)</SelectItem>
+                      <SelectItem value="720x1280">720x1280 (Portrait)</SelectItem>
+                      <SelectItem value="1024x1792">1024x1792 (Portrait, Pro)</SelectItem>
+                      <SelectItem value="1792x1024">1792x1024 (Landscape, Pro)</SelectItem>
                     </SelectContent>
                   </Select>
-                </div>
-
-                {/* Quality & Style */}
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="quality" className={`text-base font-semibold ${textClass}`}>Quality</Label>
-                    <Select value={quality} onValueChange={setQuality} disabled={loading}>
-                      <SelectTrigger className={theme === 'dark' ? 'bg-slate-800 border-slate-600 text-white' : ''}>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent className={theme === 'dark' ? 'bg-slate-800 border-slate-600 text-white' : ''}>
-                        <SelectItem value="standard">Standard</SelectItem>
-                        <SelectItem value="high">High</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="fps" className={`text-base font-semibold ${textClass}`}>FPS</Label>
-                    <Select value={fps} onValueChange={setFps} disabled={loading}>
-                      <SelectTrigger className={theme === 'dark' ? 'bg-slate-800 border-slate-600 text-white' : ''}>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent className={theme === 'dark' ? 'bg-slate-800 border-slate-600 text-white' : ''}>
-                        <SelectItem value="24">24 fps</SelectItem>
-                        <SelectItem value="30">30 fps</SelectItem>
-                        <SelectItem value="60">60 fps</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
                 </div>
 
                 {/* Cost Estimate */}
